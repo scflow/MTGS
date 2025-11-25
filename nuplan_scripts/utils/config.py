@@ -83,7 +83,7 @@ class RoadBlockConfig(BaseConfig):
     """
 
 @dataclass
-class FrmaeCentralConfig(RoadBlockConfig):
+class FrameCentralConfig(RoadBlockConfig):
     central_log: str = ""
     """nuplan log name"""
 
@@ -92,7 +92,7 @@ class FrmaeCentralConfig(RoadBlockConfig):
 
     multi_traversal_mode: Literal['reconstruction', 'off'] = 'off'
 
-def load_config(config_path: str) -> Union[RoadBlockConfig, FrmaeCentralConfig]:
+def load_config(config_path: str) -> Union[RoadBlockConfig, FrameCentralConfig]:
 
     if config_path.endswith('.py'):
         module_name = os.path.splitext(os.path.basename(config_path))[0]

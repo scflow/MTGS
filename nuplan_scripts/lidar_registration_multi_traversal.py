@@ -18,7 +18,7 @@ from nuplan.common.maps.nuplan_map.map_factory import get_maps_api
 from nuplan.common.maps.maps_datatypes import SemanticMapLayer
 from nuplan.common.actor_state.state_representation import Point2D
 
-from nuplan_scripts.utils.config import load_config, RoadBlockConfig, FrmaeCentralConfig
+from nuplan_scripts.utils.config import load_config, RoadBlockConfig, FrameCentralConfig
 from nuplan_scripts.utils.video_scene_dict_tools import VideoScene
 from nuplan_scripts.utils.constants import NUPLAN_MAP_VERSION, NUPLAN_MAPS_ROOT, CONSOLE
 
@@ -209,7 +209,7 @@ if __name__ == '__main__':
         if max_end_point_error > 1.0 or mean_error > 0.5:
             bad_videos.append(video_token)
 
-    if isinstance(config, FrmaeCentralConfig) and list(video_scene_dict.keys())[0] in bad_videos:
+    if isinstance(config, FrameCentralConfig) and list(video_scene_dict.keys())[0] in bad_videos:
         CONSOLE.log("WARNING: The central log has bad registration result. Use log pose and disable multi-traversal.", style="bold red")
         first_key = list(video_scene_dict.keys())[0]
         video_scene_dict = {first_key: video_scene_dict[first_key]}

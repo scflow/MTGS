@@ -26,7 +26,7 @@ from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.utils.rich_utils import CONSOLE
 
 from nuplan_scripts.utils.video_scene_dict_tools import VideoScene
-from nuplan_scripts.utils.config import FrmaeCentralConfig, RoadBlockConfig, load_config
+from nuplan_scripts.utils.config import FrameCentralConfig, RoadBlockConfig, load_config
 from mtgs.utils.camera_utils import matrix_from_translation_and_quaternion, \
                                            inverse_matrix_from_translation_and_quaternion, calculate_camera_velocity_in_world
 from mtgs.utils import chamfer_distance
@@ -106,7 +106,7 @@ class NuplanDataParser(DataParser):
 
     def _generate_dataparser_outputs(self, split="train"):
 
-        road_block_config: Union[FrmaeCentralConfig, RoadBlockConfig] = load_config(Path(self.config.road_block_config).as_posix())
+        road_block_config: Union[FrameCentralConfig, RoadBlockConfig] = load_config(Path(self.config.road_block_config).as_posix())
         video_scene = VideoScene(road_block_config)
         self.video_scene = video_scene
         video_scene_dict = video_scene.load_pickle(video_scene.pickle_path, verbose=False)

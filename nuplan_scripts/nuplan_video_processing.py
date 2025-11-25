@@ -18,7 +18,7 @@ from torch.utils.data import Dataset, DataLoader
 from nuplan.database.nuplan_db_orm.nuplandb import NuPlanDB
 from nuplan.database.nuplan_db_orm.lidar_pc import LidarPc
 
-from nuplan_scripts.utils.config import load_config, FrmaeCentralConfig
+from nuplan_scripts.utils.config import load_config, FrameCentralConfig
 from nuplan_scripts.utils.video_scene_dict_tools import VideoScene
 from nuplan_scripts.utils.nuplan_utils_custom import (
     CanBus, get_closest_start_idx, get_cam_info_from_lidar_pc, get_box_info_from_lidar_pc, fix_pts_interpolate
@@ -175,7 +175,7 @@ def sort_video_infos(config, video_infos):
             video['video_token'] = f'{config.road_block_name}-{idx}'
         return video_infos
 
-    elif config.__class__.__name__ == 'FrmaeCentralConfig':
+    elif config.__class__.__name__ == 'FrameCentralConfig':
         # find central video
         central_log = config.central_log
         central_token = config.central_tokens[0]
@@ -391,7 +391,7 @@ if __name__ == '__main__':
     with jsonlines.open(f'{data_root}/nuplan_log_infos.jsonl') as reader:
         log_name2lidar_pc_token = {item['log_name']: item for item in reader}
 
-    if isinstance(config, FrmaeCentralConfig) and config.multi_traversal_mode == 'off':
+    if isinstance(config, FrameCentralConfig) and config.multi_traversal_mode == 'off':
         # only keep the central traversal.
         log_name2lidar_pc_token = {config.central_log: log_name2lidar_pc_token[config.central_log]}
 
@@ -443,7 +443,7 @@ if __name__ == '__main__':
         num_workers = args.num_workers
     )
 
-    if isinstance(config, FrmaeCentralConfig):
+    if isinstance(config, FrameCentralConfig):
         if config.multi_traversal_mode == 'reconstruction':
             # keep the multi_traversal infos.
             # use them to reconstruct the whole road block.

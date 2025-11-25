@@ -11,7 +11,7 @@ from torch.utils.data import Dataset, DataLoader
 from nuplan.database.nuplan_db_orm.nuplandb import NuPlanDB
 from nuplan_scripts.utils.nuplan_utils_custom import get_closest_start_idx
 from nuplan_scripts.utils.constants import NUPLAN_DATA_ROOT, NUPLAN_DB_FILES
-from nuplan_scripts.utils.config import FrmaeCentralConfig
+from nuplan_scripts.utils.config import FrameCentralConfig
 
 second_before_token = 4
 second_after_token = 8
@@ -96,7 +96,7 @@ class GenerateConfigFromToken:
                         np.min([road_block[:2], new_road_block[:2]], axis=0), 
                         np.max([road_block[2:], new_road_block[2:]], axis=0)], axis=0)
 
-                token_config = FrmaeCentralConfig(
+                token_config = FrameCentralConfig(
                     road_block_name=f"{central_log}-{token}",
                     road_block=tuple(road_block.tolist()),
                     data_root=self.data_root,
