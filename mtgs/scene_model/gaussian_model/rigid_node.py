@@ -201,7 +201,46 @@ class RigidSubModel(VanillaGaussianSplattingModel):
             prev_position = self.get_means(quat_prev_frame, trans_prev_frame)
             next_position = self.get_means(quat_next_frame, trans_next_frame)
             time_interval = (self.dataframe_dict["raw_timestamps"][next_frame] - self.dataframe_dict["raw_timestamps"][prev_frame]) * 1e-6
-            return (next_position - prev_position) / time_interval
+        return (next_position - prev_position) / time_interval
+
+    def _apply_retarget(
+        self,
+        quat_cur_frame: Tensor,
+        trans_cur_frame: Tensor,
+        retarget_token: Optional[str],
+        retarget_trans: Optional[Tensor],
+        retarget_quat: Optional[Tensor],
+        retarget_mask: Optional[Tensor],
+    ) -> Tuple[Tensor, Tensor]:
+        if retarget_token is None or self.instance_info is None:
+            return quat_cur_frame, trans_cur_frame
+        if self.instance_info.get("token") != retarget_token:
+            return quat_cur_frame, trans_cur_frame
+        if retarget_mask is not None:
+            if isinstance(retarget_mask, Tensor):
+                if retarget_mask.numel() > 1:
+                    active = bool(retarget_mask.flatten()[0].item())
+                else:
+                    active = bool(retarget_mask.item())
+            else:
+                active = bool(retarget_mask)
+            if not active:
+                return quat_cur_frame, trans_cur_frame
+        if retarget_trans is not None:
+            if not isinstance(retarget_trans, Tensor):
+                retarget_trans = torch.tensor(retarget_trans, device=trans_cur_frame.device, dtype=trans_cur_frame.dtype)
+            if retarget_trans.ndim > 1:
+                retarget_trans = retarget_trans[0]
+            retarget_trans = retarget_trans.to(device=trans_cur_frame.device, dtype=trans_cur_frame.dtype)
+            trans_cur_frame = retarget_trans
+        if retarget_quat is not None:
+            if not isinstance(retarget_quat, Tensor):
+                retarget_quat = torch.tensor(retarget_quat, device=quat_cur_frame.device, dtype=quat_cur_frame.dtype)
+            if retarget_quat.ndim > 1:
+                retarget_quat = retarget_quat[0]
+            retarget_quat = retarget_quat.to(device=quat_cur_frame.device, dtype=quat_cur_frame.dtype)
+            quat_cur_frame = retarget_quat
+        return quat_cur_frame, trans_cur_frame
 
     def get_means(self, quat_cur_frame, trans_cur_frame):
         local_means = self.gauss_params['means']
@@ -275,6 +314,14 @@ class RigidSubModel(VanillaGaussianSplattingModel):
         if quat_cur_frame is None or trans_cur_frame is None:
             self.frame_idx = None
             return None
+        quat_cur_frame, trans_cur_frame = self._apply_retarget(
+            quat_cur_frame,
+            trans_cur_frame,
+            kwargs.get("retarget_vehicle_token"),
+            kwargs.get("retarget_trans"),
+            kwargs.get("retarget_quat"),
+            kwargs.get("retarget_mask"),
+        )
 
         if timestamp is None:
             timestamp = self.dataframe_dict["frame_timestamps"][frame_idx]

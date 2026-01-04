@@ -131,7 +131,7 @@ dmypy.json
 
 # Custom
 ckpts
-data
+# data
 work_dirs
 .DS_Store
 
