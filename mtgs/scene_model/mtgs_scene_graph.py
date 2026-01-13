@@ -272,6 +272,28 @@ class MTGSSceneModel(Model):
                     self.gaussian_models[model_name] = rigid_model
                     self.model_ids[model_name] = cur_model_id
                     cur_model_id += 1
+            elif config_name == 'bezier_rigid_object':
+                # NEW: Bézier曲线刚体模型（用于车辆）
+                if 'vehicle' in self.masked_out_classes:
+                    continue
+                instances_info = self.datamanager.train_dataparser_outputs.metadata["instances_info"]
+                model_config = self._update_gaussian_cfg(model_config)
+                for instance_token, instance_dict in instances_info.items():
+                    class_name = instance_dict["class_name"]
+                    if class_name not in ["vehicle"]:
+                        continue
+                    self.model_types[instance_token] = model_config.model_type
+                    self.node_type[instance_token] = config_name
+                    model_name = self.get_submodel_name(instance_token)
+                    bezier_rigid_model = model_config.setup(
+                        model_name=model_name,
+                        model_id=cur_model_id,
+                        instance_info=self.instance_info[instance_token]
+                    )
+                    bezier_rigid_model.populate_modules(instance_dict, self.data_frame_dict)
+                    self.gaussian_models[model_name] = bezier_rigid_model
+                    self.model_ids[model_name] = cur_model_id
+                    cur_model_id += 1
             elif config_name == 'deformable_node':
                 instances_info = self.datamanager.train_dataparser_outputs.metadata["instances_info"]
                 for instance_token, instance_dict in instances_info.items():

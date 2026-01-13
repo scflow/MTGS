@@ -18,14 +18,13 @@ from mtgs.scene_model.module.appearance import LearnableExposureRGBModelConfig
 from mtgs.scene_model.gaussian_model.vanilla_gaussian_splatting import GaussianSplattingControlConfig
 from mtgs.scene_model.gaussian_model.skybox_gaussian_splatting import SkyboxGaussianSplattingModelConfig
 from mtgs.scene_model.gaussian_model.multi_color_gaussian_splatting import MultiColorGaussianSplattingModelConfig
-from mtgs.scene_model.gaussian_model.rigid_node import RigidSubModelConfig
 from mtgs.utils.geometric_loss import DepthLossType
 
 iteration_factor = 1
 config = CustomTrainerConfig(
-    method_name="mtgs",
+    method_name="mtgs_static",
     project_name="MTGS",
-    experiment_name="MTGS",
+    experiment_name="MTGS_static",
     steps_per_eval_image=30001 * iteration_factor,
     steps_per_eval_batch=0 * iteration_factor,
     steps_per_save=3000 * iteration_factor,
@@ -47,17 +46,17 @@ config = CustomTrainerConfig(
             cache_images_type="uint8",
             load_mask=True,
             load_semantic_masks_from="semantic",
-            load_instance_masks=True,
-            load_custom_masks=('pedestrian', 'bicycle'),
+            load_instance_masks=False,
+            load_custom_masks=("vehicle",),
             load_lidar_depth=True,
             load_pseudo_depth=True,
             undistort_images="optimal",
         ),
         model=MTGSSceneModelConfig(
             control=GaussianSplattingControlConfig(
-                densify_from_iter=500*iteration_factor,
-                refine_every=100*iteration_factor,
-                stop_split_at=15000*iteration_factor,
+                densify_from_iter=500 * iteration_factor,
+                refine_every=100 * iteration_factor,
+                stop_split_at=15000 * iteration_factor,
                 reset_alpha_every=30,  # opacity_reset_interval reset_alpha_every * refine_every
                 continue_cull_post_densification=False,
                 cull_alpha_thresh=0.005,
@@ -66,21 +65,21 @@ config = CustomTrainerConfig(
                 densify_grad_thresh=0.001,
                 n_split_samples=2,
                 clone_sample_means=True,
-                stop_screen_size_at=15000*iteration_factor,
+                stop_screen_size_at=15000 * iteration_factor,
                 cull_screen_size=150,
                 split_screen_size=100,
                 sh_degree=3,
-                sh_degree_interval=1000*iteration_factor,
+                sh_degree_interval=1000 * iteration_factor,
                 use_abs_grad=True,
             ),
             model_config=dict(
                 background=MultiColorGaussianSplattingModelConfig(
-                    model_type='multicolor',  # param group name
+                    model_type="multicolor",  # param group name
                     verbose=True,
                     multi_feature_rest=True,
                 ),
                 skybox=SkyboxGaussianSplattingModelConfig(
-                    model_type='multicolor',
+                    model_type="multicolor",
                     skybox_radius=1000,
                     num_sky_gaussians=100000,
                     skybox_type="spheric",
@@ -88,36 +87,25 @@ config = CustomTrainerConfig(
                     mono_sky=False,
                     multi_feature_rest=True,
                 ),
-                rigid_object=RigidSubModelConfig(
-                    model_type='rigid',
-                    fourier_features_dim=None,
-                    # 强制它被视为非静态
-                    is_static=False,
-                    # 调高不透明度阈值，防止它太容易被剔除
-                    control=GaussianSplattingControlConfig(
-                        cull_alpha_thresh=0.002, # 默认可能是 0.005，改小一点保留更多点
-                        densify_grad_thresh=0.0005 # 改小一点让它更容易生长
-                    )
-                ),
             ),
-            background_color='black',
+            background_color="black",
             camera_optimizer=CameraOptimizerConfig(
-                mode='SO3xR3'
+                mode="SO3xR3"
             ),
             appearance_model=LearnableExposureRGBModelConfig(),
-            rasterize_mode='antialiased',
+            rasterize_mode="antialiased",
             color_corrected_metrics=True,
             lpips_metric=True,
             ssim_lambda=0.2,
             output_depth_during_training=True,
             use_depth_loss=True,
-            depth_source='lidar',
+            depth_source="lidar",
             depth_loss_type=DepthLossType.InverseL1,
             depth_lambda=0.5,
             ncc_loss_lambda=0.1,
             predict_normals=True,
             use_normal_loss=True,
-            normal_supervision='depth',
+            normal_supervision="depth",
             use_normal_tv_loss=True,
             normal_lambda=0.1,
             two_d_gaussians=True,
@@ -150,7 +138,7 @@ config = CustomTrainerConfig(
             "scheduler": None,
         },
         "quats": {
-            "optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15), 
+            "optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15),
             "scheduler": None
         },
         "multicolor.features_dc": {
@@ -177,20 +165,6 @@ config = CustomTrainerConfig(
                 lr_final=0.0001, max_steps=30001 * iteration_factor, warmup_steps=5000 * iteration_factor, lr_pre_warmup=0.00001
             ),
         },
-        "ins_rotation": {
-            "optimizer": AdamOptimizerConfig(lr=0.00001, eps=1e-15),
-            "scheduler": ExponentialDecaySchedulerConfig(
-                lr_final=0.000005, 
-                max_steps=30001 * iteration_factor
-            ),
-        },
-        "ins_translation": {
-            "optimizer": AdamOptimizerConfig(lr=0.0005, eps=1e-15),
-            "scheduler": ExponentialDecaySchedulerConfig(
-                lr_final=0.0001, 
-                max_steps=30001 * iteration_factor
-            ),
-        },
     },
     vis="none",
     viewer=ViewerConfig(
@@ -201,10 +175,10 @@ config = CustomTrainerConfig(
     machine=MachineConfig(
         seed=0,
         num_devices=1,
-        device_type='cuda',
+        device_type="cuda",
     ),
     logging=LoggingConfig(
-        profiler='none',
+        profiler="none",
         steps_per_log=50,
         max_buffer_size=100,
         local_writer=LocalWriterConfig(
@@ -216,5 +190,5 @@ config = CustomTrainerConfig(
 
 method = MethodSpecification(
   config=config,
-  description="mtgs"
+  description="mtgs_static"
 )
