@@ -120,6 +120,10 @@ config = CustomTrainerConfig(
                     fourier_features_dim=None,  # 不使用Fourier特征（可选）
                     is_static=False,  # 动态物体
 
+                    # 过滤box底部点云，减少路面被刚体带走
+                    ground_filter_height=0.15,
+                    min_points_after_filter=50,
+
                     # 控制参数（针对Bézier优化）
                     control=GaussianSplattingControlConfig(
                         cull_alpha_thresh=0.002,  # 更小的剔除阈值
@@ -155,7 +159,7 @@ config = CustomTrainerConfig(
             ssim_lambda=0.2,
             output_depth_during_training=True,
             use_depth_loss=True,
-            depth_source='lidar',
+            depth_source='pseudo',
             depth_loss_type=DepthLossType.InverseL1,
             depth_lambda=0.5,
             ncc_loss_lambda=0.1,

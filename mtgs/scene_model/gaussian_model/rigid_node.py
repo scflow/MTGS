@@ -36,6 +36,10 @@ class RigidSubModelConfig(VanillaGaussianSplattingModelConfig):
     """whether to set the object to static, i.e., not optimizing the object pose."""
     fourier_in_space: Optional[Literal['spatial', 'temporal']] = 'temporal'
     """whether to use the Fourier features in spatial or temporal domain."""
+    ground_filter_height: float = 0.0
+    """remove points within this height above the lowest z; set to 0 to disable."""
+    min_points_after_filter: int = 50
+    """minimum points required after filtering to accept the crop."""
 
 class RigidSubModel(VanillaGaussianSplattingModel):
 
@@ -74,9 +78,17 @@ class RigidSubModel(VanillaGaussianSplattingModel):
             } 
         }
         """
+        points = instance_dict["pts"]
+        colors = instance_dict["colors"]
+        if self.config.ground_filter_height > 0 and points.numel() > 0:
+            z_min = points[:, 2].min()
+            keep_mask = points[:, 2] > (z_min + self.config.ground_filter_height)
+            if keep_mask.sum().item() >= self.config.min_points_after_filter:
+                points = points[keep_mask]
+                colors = colors[keep_mask]
         points_dict = dict(
-            xyz=instance_dict["pts"],
-            rgb=instance_dict["colors"],
+            xyz=points,
+            rgb=colors,
         )
         if (self.config.fourier_features_dim is not None) and (self.config.fourier_features_dim <= 1):
             self.config.fourier_features_dim = None
@@ -117,6 +129,8 @@ class RigidSubModel(VanillaGaussianSplattingModel):
             "fourier_features_dim": self.config.fourier_features_dim,
             "fourier_features_scale": self.config.fourier_features_scale,
             "fourier_in_space": self.config.fourier_in_space,
+            "ground_filter_height": self.config.ground_filter_height,
+            "min_points_after_filter": self.config.min_points_after_filter,
         })
         if not self.is_static:
             portable_config.update({

@@ -65,6 +65,10 @@ class BezierRigidSubModelConfig(VanillaGaussianSplattingModelConfig):
     fourier_features_scale: Optional[int] = 1
     is_static: Optional[bool] = False
     fourier_in_space: Optional[Literal['spatial', 'temporal']] = 'temporal'
+    ground_filter_height: float = 0.0
+    """remove points within this height above the lowest z; set to 0 to disable."""
+    min_points_after_filter: int = 50
+    """minimum points required after filtering to accept the crop."""
 
 
 class BezierRigidSubModel(VanillaGaussianSplattingModel):
@@ -128,9 +132,17 @@ class BezierRigidSubModel(VanillaGaussianSplattingModel):
             data_frame_dict: 时间戳信息
         """
         # 1. 初始化基础高斯参数
+        points = instance_dict["pts"]
+        colors = instance_dict["colors"]
+        if self.config.ground_filter_height > 0 and points.numel() > 0:
+            z_min = points[:, 2].min()
+            keep_mask = points[:, 2] > (z_min + self.config.ground_filter_height)
+            if keep_mask.sum().item() >= self.config.min_points_after_filter:
+                points = points[keep_mask]
+                colors = colors[keep_mask]
         points_dict = dict(
-            xyz=instance_dict["pts"],
-            rgb=instance_dict["colors"],
+            xyz=points,
+            rgb=colors,
         )
         if (self.config.fourier_features_dim is not None) and (self.config.fourier_features_dim <= 1):
             self.config.fourier_features_dim = None
@@ -666,6 +678,8 @@ class BezierRigidSubModel(VanillaGaussianSplattingModel):
             "bezier_order": self.config.bezier_order,
             "use_velocity_loss": self.config.use_velocity_loss,
             "use_bezier": self.use_bezier,
+            "ground_filter_height": self.config.ground_filter_height,
+            "min_points_after_filter": self.config.min_points_after_filter,
         })
 
         if self.use_bezier and hasattr(self, 'trajectory_cp'):

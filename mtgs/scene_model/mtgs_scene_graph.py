@@ -868,6 +868,13 @@ class MTGSSceneModel(Model):
             if self.config.depth_source == "pseudo":
                 gt_depth = batch["depth"].to(self.device)
                 depth_loss_mask = (gt_depth > 0.1) & (gt_depth < 50)
+                if "depth_confidence" in batch:
+                    confidence = batch["depth_confidence"].to(self.device)
+                    depth_loss_mask = depth_loss_mask & (confidence > 0)
+                if "semantic_map" in batch:
+                    semantic_map = batch["semantic_map"].to(self.device)
+                    # Cityscapes: sky label id is 10.
+                    depth_loss_mask = depth_loss_mask & (semantic_map != 10)
             elif self.config.depth_source == "lidar":
                 gt_depth = batch["lidar_depth"].to(self.device)
                 depth_loss_mask = (gt_depth > 0.1) & (gt_depth < 80)
@@ -911,6 +918,13 @@ class MTGSSceneModel(Model):
                 pred_depth = outputs["depth"].to(self.device)
                 gt_depth = batch["depth"].to(self.device)
                 depth_loss_mask = (gt_depth > 0.1) & (gt_depth < 80) & combined_mask
+                if "depth_confidence" in batch:
+                    confidence = batch["depth_confidence"].to(self.device)
+                    depth_loss_mask = depth_loss_mask & (confidence > 0)
+                if "semantic_map" in batch:
+                    semantic_map = batch["semantic_map"].to(self.device)
+                    # Cityscapes: sky label id is 10.
+                    depth_loss_mask = depth_loss_mask & (semantic_map != 10)
                 if depth_loss_mask.sum() != 0:
                     ncc_loss = calculate_depth_ncc_loss(pred_depth, gt_depth, patch_size, stride, mask=depth_loss_mask)
                     loss_dict['ncc_loss'] = ncc_loss * self.config.ncc_loss_lambda
