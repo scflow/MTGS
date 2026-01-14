@@ -88,13 +88,16 @@ class BezierRigidSubModel(VanillaGaussianSplattingModel):
         # Bézier曲线参数
         self.num_control_points = self.config.bezier_order + 1
         self.binomial_coefs = self._compute_binomial_coefficients()
-        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-
         # Caching
         self.last_step = None
         self.cached_gaussians = None
         self.last_bezier_t = None
+        self.last_frame_idx = None
         self.use_bezier = False  # 将在populate_modules中设置
+
+    @property
+    def get_xyz(self) -> Tensor:
+        return self.means
 
     def _compute_binomial_coefficients(self):
         """计算二项式系数 C(n,k)"""
@@ -149,9 +152,10 @@ class BezierRigidSubModel(VanillaGaussianSplattingModel):
             # 静态物体使用平均姿态
             self.instance_quats = Parameter(instance_quats[self.in_frame_mask].mean(dim=0))
             self.instance_trans = Parameter(instance_trans[self.in_frame_mask].mean(dim=0))
+            self.in_frame_mask = torch.ones_like(self.in_frame_mask, dtype=torch.bool)
             # 静态物体不需要Bézier曲线
             self.use_bezier = False
-            CONSOLE.log(f"[BezierRigid] Static object, using mean pose")
+            # CONSOLE.log(f"[BezierRigid] Static object, using mean pose")
             return
 
         # 4. 动态物体：使用Bézier曲线
@@ -159,6 +163,11 @@ class BezierRigidSubModel(VanillaGaussianSplattingModel):
 
         # 4.1 提取有效帧的姿态
         valid_indices = torch.where(self.in_frame_mask)[0]
+        if valid_indices.numel() == 0:
+            self.use_bezier = False
+            self.instance_quats = Parameter(instance_quats)
+            self.instance_trans = Parameter(instance_trans)
+            return
         valid_translations = instance_trans[valid_indices]  # (T_valid, 3)
         valid_quaternions = instance_quats[valid_indices]   # (T_valid, 4)
 
@@ -166,6 +175,16 @@ class BezierRigidSubModel(VanillaGaussianSplattingModel):
         self.bezier_t_normalized = self._chord_length_parametrization(
             valid_translations
         )  # (T_valid,)
+        self.frame_idx_to_bezier_idx = torch.full(
+            (self.num_frames,),
+            -1,
+            dtype=torch.long,
+            device=valid_indices.device,
+        )
+        self.frame_idx_to_bezier_idx[valid_indices] = torch.arange(
+            valid_indices.shape[0],
+            device=valid_indices.device,
+        )
 
         # 4.3 拟合Bézier控制点
         if self.config.use_trajectory_fitting:
@@ -216,11 +235,26 @@ class BezierRigidSubModel(VanillaGaussianSplattingModel):
         diffs = points[1:] - points[:-1]  # (N-1, 3)
         distances = torch.norm(diffs, dim=-1)  # (N-1,)
 
+        if distances.numel() == 0:
+            return torch.zeros(points.shape[0], device=points.device)
+
         # 累积距离
         cum_dist = torch.cat([torch.zeros(1, device=distances.device), torch.cumsum(distances, dim=0)])
+        if torch.isclose(cum_dist[-1], torch.zeros((), device=cum_dist.device)):
+            return torch.zeros_like(cum_dist)
         cum_dist = cum_dist / cum_dist[-1]  # 归一化到[0,1]
 
         return cum_dist
+
+    def _get_bezier_t_for_frame(self, frame_idx: int) -> Optional[Tensor]:
+        if frame_idx is None or frame_idx >= self.num_frames or not bool(self.in_frame_mask[frame_idx]):
+            return None
+        if not hasattr(self, "frame_idx_to_bezier_idx"):
+            return self.bezier_t_normalized[frame_idx]
+        bezier_idx = self.frame_idx_to_bezier_idx[frame_idx]
+        if bezier_idx < 0:
+            return None
+        return self.bezier_t_normalized[bezier_idx]
 
     def _fit_bezier_curve(self, points: Tensor, t: Tensor) -> Parameter:
         """
@@ -266,7 +300,7 @@ class BezierRigidSubModel(VanillaGaussianSplattingModel):
                 # 这里可以细化参数，简化起见跳过
 
                 # 重新拟合
-                control_points = torch.linalg.lstsq(M, points).solution.T  # (num_cp, 3)
+                control_points = torch.linalg.lstsq(M, points).solution  # (num_cp, 3)
 
                 # 检查收敛
                 if torch.norm(M @ control_points - points, dim=-1).max() < 1e-3:
@@ -360,7 +394,10 @@ class BezierRigidSubModel(VanillaGaussianSplattingModel):
             quat: (4,) 四元数
             trans: (3,) 平移向量
         """
-        if self.is_static or not self.use_bezier:
+        if self.is_static:
+            return self.instance_quats, self.instance_trans
+
+        if not self.use_bezier:
             # 回退到传统方法（直接返回存储的姿态）
             if frame_idx is not None:
                 if frame_idx >= self.num_frames or not self.in_frame_mask[frame_idx]:
@@ -392,7 +429,9 @@ class BezierRigidSubModel(VanillaGaussianSplattingModel):
                 return None, None
 
             # 获取Bézier参数
-            bezier_t = self.bezier_t_normalized[frame_idx]
+            bezier_t = self._get_bezier_t_for_frame(frame_idx)
+            if bezier_t is None:
+                return None, None
 
             # 计算平移
             trans = self._evaluate_bezier_curve(self.trajectory_cp, bezier_t)
@@ -412,13 +451,19 @@ class BezierRigidSubModel(VanillaGaussianSplattingModel):
                 return None, None
 
             if next_frame == prev_frame:
-                bezier_t = self.bezier_t_normalized[next_frame]
+                bezier_t = self._get_bezier_t_for_frame(next_frame)
+                if bezier_t is None:
+                    return None, None
                 trans = self._evaluate_bezier_curve(self.trajectory_cp, bezier_t)
                 return self.instance_quats[next_frame], trans
 
             # 插值
             t = (timestamp - frame_timestamps[prev_frame]) / (frame_timestamps[next_frame] - frame_timestamps[prev_frame])
-            bezier_t = t * self.bezier_t_normalized[next_frame] + (1 - t) * self.bezier_t_normalized[prev_frame]
+            bezier_t_next = self._get_bezier_t_for_frame(next_frame)
+            bezier_t_prev = self._get_bezier_t_for_frame(prev_frame)
+            if bezier_t_next is None or bezier_t_prev is None:
+                return None, None
+            bezier_t = t * bezier_t_next + (1 - t) * bezier_t_prev
 
             trans = self._evaluate_bezier_curve(self.trajectory_cp, bezier_t)
 
@@ -448,7 +493,9 @@ class BezierRigidSubModel(VanillaGaussianSplattingModel):
             if frame_idx >= self.num_frames or not self.in_frame_mask[frame_idx]:
                 return torch.zeros_like(self.get_xyz)
 
-            bezier_t = self.bezier_t_normalized[frame_idx]
+            bezier_t = self._get_bezier_t_for_frame(frame_idx)
+            if bezier_t is None:
+                return torch.zeros_like(self.get_xyz)
             velocity = self._compute_bezier_derivative(self.trajectory_cp, bezier_t)
 
             # 广播到所有高斯点
@@ -466,7 +513,9 @@ class BezierRigidSubModel(VanillaGaussianSplattingModel):
                 return torch.zeros_like(self.get_xyz)
 
             if next_frame == prev_frame:
-                bezier_t = self.bezier_t_normalized[next_frame]
+                bezier_t = self._get_bezier_t_for_frame(next_frame)
+                if bezier_t is None:
+                    return torch.zeros_like(self.get_xyz)
                 velocity = self._compute_bezier_derivative(self.trajectory_cp, bezier_t)
                 if velocity.dim() == 1:
                     velocity = velocity.unsqueeze(0)
@@ -474,30 +523,140 @@ class BezierRigidSubModel(VanillaGaussianSplattingModel):
 
             # 插值
             t = (timestamp - frame_timestamps[prev_frame]) / (frame_timestamps[next_frame] - frame_timestamps[prev_frame])
-            bezier_t = t * self.bezier_t_normalized[next_frame] + (1 - t) * self.bezier_t_normalized[prev_frame]
+            bezier_t_next = self._get_bezier_t_for_frame(next_frame)
+            bezier_t_prev = self._get_bezier_t_for_frame(prev_frame)
+            if bezier_t_next is None or bezier_t_prev is None:
+                return torch.zeros_like(self.get_xyz)
+            bezier_t = t * bezier_t_next + (1 - t) * bezier_t_prev
 
             velocity = self._compute_bezier_derivative(self.trajectory_cp, bezier_t)
             if velocity.dim() == 1:
                 velocity = velocity.unsqueeze(0)
             return velocity.expand(self.get_xyz.shape[0], -1)
 
-    def get_param_groups(self):
+    def get_quats(self, quat_cur_frame, trans_cur_frame):
+        """计算当前帧的全局四元数"""
+        from .utils import quat_mult
+
+        local_quats = self.quats / self.quats.norm(dim=-1, keepdim=True)
+        global_quats = quat_mult(quat_cur_frame, local_quats)
+        return global_quats
+
+    def get_gaussians(self, camera_to_worlds, travel_id=None, frame_idx=None, timestamp=None, return_features=False, return_v=False, **kwargs):
+        if travel_id != self.travel_id or (frame_idx is None and timestamp is None):
+            self.frame_idx = None
+            return None
+
+        self.frame_idx = frame_idx
+        if frame_idx is not None:
+            assert frame_idx < self.num_frames
+
+            if self.use_cache(frame_idx):
+                return_dict = self.cached_gaussians
+                if not return_features:
+                    return_dict["rgbs"] = self.get_rgbs(
+                        camera_to_worlds, timestamp=timestamp, global_current_means=return_dict["means"]
+                    )
+                return return_dict
+
+        quat_cur_frame, trans_cur_frame = self.get_object_pose(frame_idx, timestamp)
+        if quat_cur_frame is None or trans_cur_frame is None:
+            self.frame_idx = None
+            return None
+
+        if timestamp is None:
+            timestamp = self.dataframe_dict["frame_timestamps"][frame_idx]
+
+        global_means = self.get_means(quat_cur_frame, trans_cur_frame)
+        return_dict = {
+            "means": global_means,
+            "scales": self.get_scales(),
+            "quats": self.get_quats(quat_cur_frame, trans_cur_frame),
+            "opacities": self.get_opacity(),
+        }
+        if return_features:
+            return_dict.update({
+                "features_dc": self.features_dc,
+                "features_rest": self.features_rest,
+            })
+        else:
+            return_dict["rgbs"] = self.get_rgbs(
+                camera_to_worlds, timestamp=timestamp, global_current_means=global_means
+            )
+
+        if return_v:
+            return_dict["velocities"] = self.get_velocity(frame_idx, timestamp, global_means)
+
+        # Caching the gaussians for the next step
+        if not self.training:
+            self.last_step = self.step
+            self.cached_gaussians = return_dict
+            self.last_frame_idx = frame_idx
+
+        return return_dict
+
+    def use_cache(self, frame_idx):
+        if not self.training:
+            if self.last_step == self.step and (self.is_static or frame_idx == self.last_frame_idx):
+                return True
+        return False
+
+    def get_gaussian_params(self, travel_id=None, frame_idx=None, timestamp=None, **kwargs):
+        if travel_id != self.travel_id or (frame_idx is None and timestamp is None):
+            return None
+
+        if frame_idx is not None:
+            assert frame_idx < self.num_frames
+
+        quat_cur_frame, trans_cur_frame = self.get_object_pose(frame_idx, timestamp)
+        if quat_cur_frame is None or trans_cur_frame is None:
+            return None
+
+        if timestamp is None:
+            timestamp = self.dataframe_dict["frame_timestamps"][frame_idx]
+
+        return {
+            "means": self.get_means(quat_cur_frame, trans_cur_frame),
+            "scales": self.scales,
+            "quats": self.get_quats(quat_cur_frame, trans_cur_frame),
+            "features_dc": self.get_true_features_dc(timestamp),
+            "features_rest": self.features_rest,
+            "opacities": self.opacities,
+        }
+
+    def get_param_groups(self) -> Dict[str, List[Parameter]]:
         """
         返回优化器参数组
 
         将轨迹控制点与其他参数分开优化
         """
-        params = super().get_param_groups() if hasattr(super(), 'get_param_groups') else []
+        param_groups = self.get_gaussian_param_groups()
+        param_groups[f"{self.model_name}.{self.model_type}.ins_rotation"] = [self.instance_quats]
+        param_groups[f"{self.model_name}.{self.model_type}.ins_translation"] = [self.instance_trans]
 
         # 添加轨迹控制点（使用较小的学习率）
         if self.use_bezier and hasattr(self, 'trajectory_cp'):
-            params.append({
-                "name": "trajectory_cp",
-                "params": [self.trajectory_cp],
-                "lr": 1.6e-5,  # 较小的学习率
-            })
+            param_groups[f"{self.model_name}.{self.model_type}.trajectory_cp"] = [self.trajectory_cp]
 
-        return params
+        return param_groups
+
+    def after_train(self, step: int):
+        frame_idx = getattr(self, "frame_idx", None)
+        if frame_idx is None or not self.in_frame_mask[frame_idx]:
+            return
+        if self.radii is None or self.xys_grad is None:
+            return
+        super().after_train(step)
+
+    def refinement_after(self, optimizers, step):
+        assert step == self.step
+        if self.step <= self.ctrl_config.densify_from_iter:
+            return
+        if self.step < self.ctrl_config.stop_split_at:
+            if self.xys_grad_norm is None or self.vis_counts is None or self.max_2Dsize is None:
+                CONSOLE.log(f"skip refinement after for rigid object {self.model_name}")
+                return
+        super().refinement_after(optimizers, step)
 
     @property
     def portable_config(self):
@@ -593,4 +752,3 @@ class BezierRigidSubModel(VanillaGaussianSplattingModel):
             rgbs = torch.sigmoid(colors[:, 0, :])
 
         return rgbs
-

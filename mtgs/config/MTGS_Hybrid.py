@@ -56,7 +56,7 @@ config = CustomTrainerConfig(
             cache_images_type="uint8",
             load_mask=True,
             load_semantic_masks_from="semantic",
-            load_instance_masks=True,
+            load_instance_masks=False,
             load_custom_masks=('pedestrian', 'bicycle'),  # 掩盖行人/自行车，作为可变形物体处理
             load_lidar_depth=True,
             load_pseudo_depth=True,
@@ -230,6 +230,22 @@ config = CustomTrainerConfig(
                 max_steps=30001 * iteration_factor,
                 warmup_steps=1500 * iteration_factor,
                 lr_pre_warmup=0
+            ),
+        },
+
+        # 刚体实例位姿
+        "ins_rotation": {
+            "optimizer": AdamOptimizerConfig(lr=0.00001, eps=1e-15),
+            "scheduler": ExponentialDecaySchedulerConfig(
+                lr_final=0.000005,
+                max_steps=30001 * iteration_factor,
+            ),
+        },
+        "ins_translation": {
+            "optimizer": AdamOptimizerConfig(lr=0.0005, eps=1e-15),
+            "scheduler": ExponentialDecaySchedulerConfig(
+                lr_final=0.0001,
+                max_steps=30001 * iteration_factor,
             ),
         },
 
