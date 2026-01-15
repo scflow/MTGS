@@ -277,7 +277,7 @@ config = CustomTrainerConfig(
             "scheduler": None,
         },
     },
-    vis="none",
+    vis="tensorboard",
     viewer=ViewerConfig(
         camera_frustum_scale=0.3,
         default_composite_depth=False,

@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Tuple, Type, Union
 from typing_extensions import Literal
 
 import numpy as np
+import cv2
 import torch
 import torch.nn.functional as F
 
@@ -35,6 +36,7 @@ from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimize
 from mtgs.utils.geometric_loss import DepthLossType, DepthLoss, TVLoss, calculate_depth_ncc_loss, normal_from_depth_image
 from mtgs.utils.ssim import MaskedSSIM
 from mtgs.utils.pnsr import MaskedPSNR, color_correct
+from nuplan_scripts.utils.constants import cityscape_label
 
 from .gaussian_model.vanilla_gaussian_splatting import VanillaGaussianSplattingModelConfig, GaussianSplattingControlConfig
 from .gaussian_model.rigid_node import RigidSubModel
@@ -766,6 +768,71 @@ class MTGSSceneModel(Model):
 
         return combined_mask
 
+    def _get_vehicle_semantic_mask(self, semantic_map: torch.Tensor) -> Optional[torch.Tensor]:
+        if semantic_map is None or semantic_map.numel() == 0:
+            return None
+        if semantic_map.ndim == 3:
+            semantic = semantic_map[..., 0]
+        else:
+            semantic = semantic_map
+        return (
+            (semantic == cityscape_label["car"])
+            | (semantic == cityscape_label["truck"])
+            | (semantic == cityscape_label["bus"])
+        )
+
+    def _compute_vehicle_lpips(
+        self, gt_rgb: torch.Tensor, pred_rgb: torch.Tensor, semantic_map: torch.Tensor
+    ) -> Tuple[float, int, int]:
+        vehicle_mask = self._get_vehicle_semantic_mask(semantic_map)
+        if vehicle_mask is None:
+            return float("nan"), 0, 0
+        mask_area = int(vehicle_mask.sum().item())
+        if mask_area == 0:
+            return float("nan"), 0, 0
+
+        mask_np = vehicle_mask.detach().cpu().numpy().astype(np.uint8)
+        num_labels, labels = cv2.connectedComponents(mask_np, connectivity=8)
+        if num_labels <= 1:
+            return float("nan"), 0, mask_area
+
+        pad = 4
+        resize = 128
+        min_area = 64
+        scores = []
+        height, width = mask_np.shape
+
+        with torch.no_grad():
+            for label in range(1, num_labels):
+                ys, xs = np.where(labels == label)
+                if ys.size < min_area:
+                    continue
+                y0 = max(0, int(ys.min()) - pad)
+                y1 = min(height, int(ys.max()) + pad + 1)
+                x0 = max(0, int(xs.min()) - pad)
+                x1 = min(width, int(xs.max()) + pad + 1)
+                mask_roi = labels[y0:y1, x0:x1] == label
+                if not mask_roi.any():
+                    continue
+
+                mask_tensor = torch.from_numpy(mask_roi).to(device=gt_rgb.device, dtype=gt_rgb.dtype)
+                mask_tensor = mask_tensor.unsqueeze(0)
+                gt_crop = gt_rgb[0, :, y0:y1, x0:x1]
+                pred_crop = pred_rgb[0, :, y0:y1, x0:x1]
+                gt_masked = gt_crop * mask_tensor + 0.5 * (1.0 - mask_tensor)
+                pred_masked = pred_crop * mask_tensor + 0.5 * (1.0 - mask_tensor)
+                gt_masked = gt_masked.unsqueeze(0)
+                pred_masked = pred_masked.unsqueeze(0)
+                gt_resized = F.interpolate(gt_masked, size=(resize, resize), mode="bilinear", align_corners=False)
+                pred_resized = F.interpolate(pred_masked, size=(resize, resize), mode="bilinear", align_corners=False)
+                scores.append(self.lpips(gt_resized, pred_resized))
+
+        if not scores:
+            return float("nan"), 0, mask_area
+
+        mean_lpips = torch.mean(torch.stack(scores)).item()
+        return mean_lpips, len(scores), mask_area
+
     def get_metrics_dict(self, outputs, batch) -> Dict[str, torch.Tensor]:
         """Compute and returns metrics for TRAIN set.
 
@@ -802,6 +869,13 @@ class MTGSSceneModel(Model):
             mask_nchw = torch.moveaxis(mask, -1, 0)[None, ...]
             lpips = self.lpips(gt_rgb * mask_nchw, pred_img_appearance * mask_nchw)
             metrics_dict["lpips"] = float(lpips)
+            if "semantic_map" in batch:
+                vehicle_lpips, vehicle_count, vehicle_mask_area = self._compute_vehicle_lpips(
+                    gt_rgb, pred_img_appearance, batch["semantic_map"]
+                )
+                metrics_dict["vehicle_lpips"] = vehicle_lpips
+                metrics_dict["vehicle_mask_count"] = float(vehicle_count)
+                metrics_dict["vehicle_mask_area"] = float(vehicle_mask_area)
 
         if self.config.dinov2_metric:
             dinov2_metric = self.dinov2.similarity(gt_rgb, pred_img_appearance, mask)
@@ -1103,6 +1177,13 @@ class MTGSSceneModel(Model):
             mask_nchw = mask.permute(2, 0, 1).unsqueeze(0)
             lpips = self.lpips(gt_rgb * mask_nchw, predicted_rgb * mask_nchw)
             metrics_dict["lpips"] = float(lpips)
+            if "semantic_map" in batch:
+                vehicle_lpips, vehicle_count, vehicle_mask_area = self._compute_vehicle_lpips(
+                    gt_rgb, predicted_rgb, batch["semantic_map"]
+                )
+                metrics_dict["vehicle_lpips"] = vehicle_lpips
+                metrics_dict["vehicle_mask_count"] = float(vehicle_count)
+                metrics_dict["vehicle_mask_area"] = float(vehicle_mask_area)
 
         if self.config.dinov2_metric:
             dinov2_metric = self.dinov2.similarity(gt_rgb, predicted_rgb, mask)
