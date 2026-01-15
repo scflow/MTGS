@@ -82,6 +82,16 @@ config = CustomTrainerConfig(
                 sh_degree_interval=1000*iteration_factor,
                 use_abs_grad=True,
             ),
+            # 车辆专用Loss（可控开关/权重）
+            vehicle_lpips_loss_lambda=0.03,
+            vehicle_lpips_start_step=1000,
+            vehicle_lpips_ramp=1000,
+            vehicle_depth_loss_lambda=0.05,
+            vehicle_depth_start_step=1000,
+            vehicle_depth_min=0.5,
+            vehicle_depth_max=100.0,
+            vehicle_alpha_bimodal_lambda=5e-5,
+            vehicle_alpha_start_step=2000,
             # 混合模型配置
             model_config=dict(
                 # 1. 背景：多遍历颜色适配
