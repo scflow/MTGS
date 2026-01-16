@@ -76,6 +76,19 @@ def main() -> None:
                 _run_split(model, masks[0], samps=2)
                 _run_dup(model, masks[0])
 
+    # Scalar mask cases (num_points == 1) to mirror .squeeze() edge cases.
+    scalar_shapes = [
+        torch.zeros(1, 3),
+        torch.zeros(1, 1, 3),
+        torch.zeros(1, 3, 1),
+    ]
+    scalar_masks = [torch.tensor(True), torch.tensor(False)]
+    for scales in scalar_shapes:
+        model = _build_model(scales.clone(), clone_means=True)
+        for mask in scalar_masks:
+            _run_split(model, mask, samps=2)
+            _run_dup(model, mask)
+
     print("OK: strict splatting tests passed (split/dup, shapes, empty masks, grad on).")
 
 

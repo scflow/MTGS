@@ -35,3 +35,6 @@
   - split_gaussians 中对 scales 的就地写入改为 no_grad 保护，避免叶子变量 in-place 报错。
 - tests/test_strict_splatting.py
   - 新增严苛测试：覆盖 split/dup、空 mask、三种 scales 形状、clone_sample_means，以及梯度开关组合。
+更新: 2026-01-16 16:20:21
+- mtgs/scene_model/gaussian_model/vanilla_gaussian_splatting.py
+  - densify/cull 阶段的 splits/dups/culls/toobigs 统一 reshape 为一维，避免 squeeze 产生标量 mask 引发索引异常。

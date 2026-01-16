@@ -509,8 +509,10 @@ class VanillaGaussianSplattingModel(torch.nn.Module):
                     CONSOLE.log(f"avg_grad_norm: {avg_grad_norm.mean().item()}")
 
                 high_grads = (avg_grad_norm > self.ctrl_config.densify_grad_thresh).squeeze()
+                high_grads = high_grads.reshape(-1)
 
                 splits = (self.scales.exp().max(dim=-1).values > self.ctrl_config.densify_size_thresh).squeeze()
+                splits = splits.reshape(-1)
                 splits &= high_grads
 
                 if self.step < self.ctrl_config.stop_screen_size_at:
@@ -520,6 +522,7 @@ class VanillaGaussianSplattingModel(torch.nn.Module):
                 split_params = self.split_gaussians(splits, nsamps)
 
                 dups = (self.scales.exp().max(dim=-1).values <= self.ctrl_config.densify_size_thresh).squeeze()
+                dups = dups.reshape(-1)
                 dups &= high_grads
                 dup_params = self.dup_gaussians(dups)
                 for name, param in self.gauss_params.items():
@@ -597,11 +600,13 @@ class VanillaGaussianSplattingModel(torch.nn.Module):
         n_bef = self.num_points
         # cull transparent ones
         culls = (torch.sigmoid(self.opacities) < self.ctrl_config.cull_alpha_thresh).squeeze()
+        culls = culls.reshape(-1)
         below_alpha_count = torch.sum(culls).item()
         toobigs_count = 0
         toobigs_ws_count = 0
         toobigs_vs_count = 0
         if extra_cull_mask is not None:
+            extra_cull_mask = extra_cull_mask.reshape(-1)
             culls = culls | extra_cull_mask
             n_bef -= torch.sum(extra_cull_mask).item()
 
@@ -614,11 +619,13 @@ class VanillaGaussianSplattingModel(torch.nn.Module):
 
             # cull huge ones
             toobigs = (torch.exp(self.scales).max(dim=-1).values > cull_scale_thresh).squeeze()
+            toobigs = toobigs.reshape(-1)
             toobigs_ws_count = torch.sum(toobigs).item()
             if self.step < self.ctrl_config.stop_screen_size_at:
                 # cull big screen space
                 assert self.max_2Dsize is not None
                 toobigs_vs = (self.max_2Dsize > self.ctrl_config.cull_screen_size).squeeze()
+                toobigs_vs = toobigs_vs.reshape(-1)
                 toobigs_vs_count = torch.sum(toobigs_vs).item()
                 toobigs = toobigs | toobigs_vs
 
@@ -649,6 +656,19 @@ class VanillaGaussianSplattingModel(torch.nn.Module):
         """
         This function splits gaussians that are too large
         """
+        if split_mask.dim() == 0:
+            split_mask = split_mask.view(1)
+        else:
+            split_mask = split_mask.reshape(-1)
+        if split_mask.numel() != self.num_points:
+            if self.config.verbose:
+                CONSOLE.log(
+                    f"[WARNING] split_mask size {split_mask.numel()} != num_points {self.num_points}; skip split"
+                )
+            empty = {}
+            for name, param in self.gauss_params.items():
+                empty[name] = param.new_empty((0,) + param.shape[1:])
+            return empty
         n_splits = split_mask.sum().item()
         if n_splits == 0:
             empty = {}
@@ -672,9 +692,16 @@ class VanillaGaussianSplattingModel(torch.nn.Module):
                 scales_split = scales_split.reshape(scales_split.shape[0], -1)
             if scales_split.shape[1] != 3:
                 raise ValueError(f"Unexpected scales shape for split: {tuple(scales_split.shape)}")
+        if scales_split.dim() != 2:
+            scales_split = scales_split.reshape(scales_split.shape[0], -1)
         scaled_samples = torch.exp(scales_split.repeat(samps, 1)) * centered_samples  # how these scales are rotated
-        quats = self.quats[split_mask] / self.quats[split_mask].norm(dim=-1, keepdim=True)  # normalize them first
+        quats = self.quats[split_mask]
+        if quats.dim() == 1:
+            quats = quats.unsqueeze(0)
+        quats = quats / quats.norm(dim=-1, keepdim=True)  # normalize them first
         rots = quat_to_rotmat(quats.repeat(samps, 1))  # how these scales are rotated
+        if rots.dim() == 2:
+            rots = rots.unsqueeze(0)
         rotated_samples = torch.bmm(rots, scaled_samples[..., None]).squeeze()
         new_means = rotated_samples + self.means[split_mask].repeat(samps, 1)
         # step 2 & 3, sample new colors, new opacities, and other properties
@@ -724,7 +751,25 @@ class VanillaGaussianSplattingModel(torch.nn.Module):
         """
         This function duplicates gaussians that are too small
         """
+        if dup_mask.dim() == 0:
+            dup_mask = dup_mask.view(1)
+        else:
+            dup_mask = dup_mask.reshape(-1)
+        if dup_mask.numel() != self.num_points:
+            if self.config.verbose:
+                CONSOLE.log(
+                    f"[WARNING] dup_mask size {dup_mask.numel()} != num_points {self.num_points}; skip dup"
+                )
+            empty = {}
+            for name, param in self.gauss_params.items():
+                empty[name] = param.new_empty((0,) + param.shape[1:])
+            return empty
         n_dups = dup_mask.sum().item()
+        if n_dups == 0:
+            empty = {}
+            for name, param in self.gauss_params.items():
+                empty[name] = param.new_empty((0,) + param.shape[1:])
+            return empty
         if self.config.verbose:
             CONSOLE.log(f"Duplicating {dup_mask.sum().item()/self.num_points} gaussians: {n_dups}/{self.num_points}")
         new_dups = {}
@@ -732,11 +777,17 @@ class VanillaGaussianSplattingModel(torch.nn.Module):
 
             if self.ctrl_config.clone_sample_means and name == 'means':
                 centered_samples = torch.randn((n_dups, 3), device=self.device)  # Nx3 of axis-aligned scales
-                scaled_samples = (
-                    torch.exp(self.scales[dup_mask]) * centered_samples
-                )  # how these scales are rotated
-                quats = self.quats[dup_mask] / self.quats[dup_mask].norm(dim=-1, keepdim=True)  # normalize them first
+                scales_dup = self.scales[dup_mask]
+                if scales_dup.dim() != 2:
+                    scales_dup = scales_dup.reshape(scales_dup.shape[0], -1)
+                scaled_samples = torch.exp(scales_dup) * centered_samples  # how these scales are rotated
+                quats = self.quats[dup_mask]
+                if quats.dim() == 1:
+                    quats = quats.unsqueeze(0)
+                quats = quats / quats.norm(dim=-1, keepdim=True)  # normalize them first
                 rots = quat_to_rotmat(quats)  # how these scales are rotated
+                if rots.dim() == 2:
+                    rots = rots.unsqueeze(0)
                 rotated_samples = torch.bmm(rots, scaled_samples[..., None]).squeeze()
                 new_means = rotated_samples + self.means[dup_mask]
                 new_dups[name] = new_means
