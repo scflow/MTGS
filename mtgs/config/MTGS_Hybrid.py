@@ -86,6 +86,7 @@ config = CustomTrainerConfig(
             vehicle_lpips_loss_lambda=0.03,
             vehicle_lpips_start_step=1000,
             vehicle_lpips_ramp=1000,
+            vehicle_lpips_interval=10,
             vehicle_depth_loss_lambda=0.05,
             vehicle_depth_start_step=1000,
             vehicle_depth_min=0.5,

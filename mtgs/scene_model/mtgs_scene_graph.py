@@ -103,6 +103,8 @@ class MTGSSceneModelConfig(ModelConfig):
     """step to start vehicle lpips loss"""
     vehicle_lpips_ramp: int = 0
     """steps to ramp vehicle lpips loss weight"""
+    vehicle_lpips_interval: int = 1
+    """compute vehicle lpips loss every N steps; weight is scaled by N"""
 
     vehicle_depth_loss_lambda: float = 0.0
     """weight of vehicle depth loss"""
@@ -813,30 +815,32 @@ class MTGSSceneModel(Model):
             | (semantic == cityscape_label["bus"])
         )
 
-    def _vehicle_lpips_scores(
+    def _vehicle_lpips_mean(
         self,
         gt_rgb: torch.Tensor,
         pred_rgb: torch.Tensor,
         semantic_map: torch.Tensor,
         valid_mask: Optional[torch.Tensor],
-    ) -> Tuple[List[torch.Tensor], int]:
+    ) -> Tuple[Optional[torch.Tensor], int, int]:
         vehicle_mask = self._get_vehicle_semantic_mask(semantic_map, valid_mask=valid_mask)
         if vehicle_mask is None:
-            return [], 0
+            return None, 0, 0
         mask_area = int(vehicle_mask.sum().item())
         if mask_area == 0:
-            return [], 0
+            return None, 0, 0
 
         mask_np = vehicle_mask.detach().cpu().numpy().astype(np.uint8)
         num_labels, labels = cv2.connectedComponents(mask_np, connectivity=8)
         if num_labels <= 1:
-            return [], mask_area
+            return None, 0, mask_area
 
         pad = self.config.vehicle_lpips_pad
         resize = self.config.vehicle_lpips_resize
         min_area = self.config.vehicle_lpips_min_area
-        scores = []
         height, width = mask_np.shape
+        gt_list = []
+        pred_list = []
+        count = 0
 
         for label in range(1, num_labels):
             ys, xs = np.where(labels == label)
@@ -860,9 +864,68 @@ class MTGSSceneModel(Model):
             pred_masked = pred_masked.unsqueeze(0)
             gt_resized = F.interpolate(gt_masked, size=(resize, resize), mode="bilinear", align_corners=False)
             pred_resized = F.interpolate(pred_masked, size=(resize, resize), mode="bilinear", align_corners=False)
-            scores.append(self.lpips(gt_resized, pred_resized))
+            gt_list.append(gt_resized)
+            pred_list.append(pred_resized)
+            count += 1
 
-        return scores, mask_area
+        if count == 0:
+            return None, 0, mask_area
+        gt_batch = torch.cat(gt_list, dim=0)
+        pred_batch = torch.cat(pred_list, dim=0)
+        mean = self.lpips(gt_batch, pred_batch)
+        if mean.dim() > 0:
+            mean = mean.mean()
+        return mean, count, mask_area
+
+    def _vehicle_lpips_cache_key(self, batch: Dict[str, torch.Tensor]) -> Tuple[int, Optional[Union[int, Tuple[int, ...]]]]:
+        image_idx = batch.get("image_idx", None)
+        if isinstance(image_idx, torch.Tensor):
+            if image_idx.numel() == 1:
+                image_idx = int(image_idx.item())
+            else:
+                image_idx = tuple(int(x) for x in image_idx.flatten().tolist())
+        return (self.step, image_idx)
+
+    def _get_vehicle_lpips_cached(
+        self,
+        gt_rgb: torch.Tensor,
+        pred_rgb: torch.Tensor,
+        semantic_map: torch.Tensor,
+        valid_mask: Optional[torch.Tensor],
+        require_grad: bool,
+        cache_key: Tuple[int, Optional[Union[int, Tuple[int, ...]]]],
+    ) -> Tuple[Optional[torch.Tensor], int, int]:
+        cache = getattr(self, "_vehicle_lpips_cache", None)
+        if cache is not None and cache.get("key") == cache_key:
+            if require_grad:
+                mean_tensor = cache.get("mean_tensor")
+                if mean_tensor is not None and cache.get("has_grad", False):
+                    return mean_tensor, cache["count"], cache["mask_area"]
+            else:
+                if "mean_value" in cache:
+                    return cache["mean_value"], cache["count"], cache["mask_area"]
+                mean_tensor = cache.get("mean_tensor")
+                if mean_tensor is not None:
+                    return float(mean_tensor.detach().item()), cache["count"], cache["mask_area"]
+
+        mean_tensor, count, mask_area = self._vehicle_lpips_mean(
+            gt_rgb, pred_rgb, semantic_map, valid_mask=valid_mask
+        )
+        cache = {"key": cache_key, "count": count, "mask_area": mask_area}
+        if mean_tensor is None:
+            cache["mean_value"] = float("nan")
+        else:
+            mean_value = mean_tensor.detach()
+            if mean_value.dim() > 0:
+                mean_value = mean_value.mean()
+            cache["mean_value"] = float(mean_value.item())
+            if require_grad:
+                cache["mean_tensor"] = mean_tensor
+                cache["has_grad"] = True
+        self._vehicle_lpips_cache = cache
+        if require_grad:
+            return mean_tensor, count, mask_area
+        return cache["mean_value"], count, mask_area
 
     def _ramp_weight(self, weight: float, start_step: int, ramp_steps: int) -> float:
         if weight <= 0:
@@ -924,20 +987,24 @@ class MTGSSceneModel(Model):
             lpips = self.lpips(gt_rgb * mask_nchw, pred_img_appearance * mask_nchw)
             metrics_dict["lpips"] = float(lpips)
             if "semantic_map" in batch:
-                with torch.no_grad():
-                    scores, mask_area = self._vehicle_lpips_scores(
-                        gt_rgb,
-                        pred_img_appearance,
-                        batch["semantic_map"].detach().cpu(),
-                        valid_mask=mask.squeeze(-1).detach().cpu(),
-                    )
-                if scores:
-                    metrics_dict["vehicle_lpips"] = float(torch.mean(torch.stack(scores)).item())
-                    metrics_dict["vehicle_mask_count"] = float(len(scores))
-                    metrics_dict["vehicle_mask_area"] = float(mask_area)
-                else:
+                interval = max(1, int(self.config.vehicle_lpips_interval))
+                if self.training and (self.step % interval != 0):
                     metrics_dict["vehicle_lpips"] = float("nan")
                     metrics_dict["vehicle_mask_count"] = 0.0
+                    metrics_dict["vehicle_mask_area"] = 0.0
+                else:
+                    with torch.no_grad():
+                        cache_key = self._vehicle_lpips_cache_key(batch)
+                        mean_value, count, mask_area = self._get_vehicle_lpips_cached(
+                            gt_rgb,
+                            pred_img_appearance,
+                            batch["semantic_map"].detach().cpu(),
+                            valid_mask=mask.squeeze(-1).detach().cpu(),
+                            require_grad=False,
+                            cache_key=cache_key,
+                        )
+                    metrics_dict["vehicle_lpips"] = float(mean_value)
+                    metrics_dict["vehicle_mask_count"] = float(count)
                     metrics_dict["vehicle_mask_area"] = float(mask_area)
 
         if self.config.dinov2_metric:
@@ -1067,22 +1134,29 @@ class MTGSSceneModel(Model):
                     loss_dict['ncc_loss'] = ncc_loss * self.config.ncc_loss_lambda
 
         if self.config.vehicle_lpips_loss_lambda > 0 and "semantic_map" in batch:
-            weight = self._ramp_weight(
+            interval = max(1, int(self.config.vehicle_lpips_interval))
+            if self.step % interval != 0:
+                weight = 0.0
+            else:
+                weight = self._ramp_weight(
                 self.config.vehicle_lpips_loss_lambda,
                 self.config.vehicle_lpips_start_step,
                 self.config.vehicle_lpips_ramp,
-            )
+            ) * interval
             if weight > 0:
                 gt_rgb = gt_img.permute(2, 0, 1)[None, ...]
                 pred_rgb = pred_img_appearance.permute(2, 0, 1)[None, ...]
-                scores, _ = self._vehicle_lpips_scores(
+                cache_key = self._vehicle_lpips_cache_key(batch)
+                mean_tensor, count, _ = self._get_vehicle_lpips_cached(
                     gt_rgb,
                     pred_rgb,
                     batch["semantic_map"].detach().cpu(),
                     valid_mask=combined_mask.squeeze(-1).detach().cpu(),
+                    require_grad=True,
+                    cache_key=cache_key,
                 )
-                if scores:
-                    loss_dict["Vehicle LPIPS Loss"] = weight * torch.mean(torch.stack(scores))
+                if mean_tensor is not None and count > 0:
+                    loss_dict["Vehicle LPIPS Loss"] = weight * mean_tensor
 
         if (
             self.config.vehicle_depth_loss_lambda > 0
@@ -1306,20 +1380,18 @@ class MTGSSceneModel(Model):
             metrics_dict["lpips"] = float(lpips)
             if "semantic_map" in batch:
                 with torch.no_grad():
-                    scores, mask_area = self._vehicle_lpips_scores(
+                    cache_key = self._vehicle_lpips_cache_key(batch)
+                    mean_value, count, mask_area = self._get_vehicle_lpips_cached(
                         gt_rgb,
                         predicted_rgb,
                         batch["semantic_map"].detach().cpu(),
                         valid_mask=mask.squeeze(-1).detach().cpu(),
+                        require_grad=False,
+                        cache_key=cache_key,
                     )
-                if scores:
-                    metrics_dict["vehicle_lpips"] = float(torch.mean(torch.stack(scores)).item())
-                    metrics_dict["vehicle_mask_count"] = float(len(scores))
-                    metrics_dict["vehicle_mask_area"] = float(mask_area)
-                else:
-                    metrics_dict["vehicle_lpips"] = float("nan")
-                    metrics_dict["vehicle_mask_count"] = 0.0
-                    metrics_dict["vehicle_mask_area"] = float(mask_area)
+                metrics_dict["vehicle_lpips"] = float(mean_value)
+                metrics_dict["vehicle_mask_count"] = float(count)
+                metrics_dict["vehicle_mask_area"] = float(mask_area)
 
         if self.config.dinov2_metric:
             dinov2_metric = self.dinov2.similarity(gt_rgb, predicted_rgb, mask)
