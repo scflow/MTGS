@@ -26,3 +26,12 @@
   - 新增 vehicle_lpips_interval=5 默认值。
 - mtgs/scene_model/gaussian_model/vanilla_gaussian_splatting.py
   - split_gaussians 对 scales 形状更健壮的 squeeze/reshape 处理并加异常检测。
+
+版本: v1.1.0.b
+时间: 2026-01-16 14:04:32
+详细修改:
+- mtgs/scene_model/gaussian_model/vanilla_gaussian_splatting.py
+  - split_gaussians 对空分裂直接返回空张量，避免空 reshape 报错。
+  - split_gaussians 中对 scales 的就地写入改为 no_grad 保护，避免叶子变量 in-place 报错。
+- tests/test_strict_splatting.py
+  - 新增严苛测试：覆盖 split/dup、空 mask、三种 scales 形状、clone_sample_means，以及梯度开关组合。

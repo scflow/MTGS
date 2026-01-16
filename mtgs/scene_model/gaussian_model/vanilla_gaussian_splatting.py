@@ -650,6 +650,11 @@ class VanillaGaussianSplattingModel(torch.nn.Module):
         This function splits gaussians that are too large
         """
         n_splits = split_mask.sum().item()
+        if n_splits == 0:
+            empty = {}
+            for name, param in self.gauss_params.items():
+                empty[name] = param.new_empty((0,) + param.shape[1:])
+            return empty
         if self.config.verbose:
             CONSOLE.log(f"Splitting {split_mask.sum().item()/self.num_points} gaussians: {n_splits}/{self.num_points}")
         centered_samples = torch.randn((samps * n_splits, 3), device=self.device)  # Nx3 of axis-aligned scales
@@ -681,17 +686,20 @@ class VanillaGaussianSplattingModel(torch.nn.Module):
             scales_split_raw = scales_param[split_mask]
             if scales_split_raw.dim() == 2:
                 new_scales = new_scales_base.repeat(samps, 1)
-                self.gauss_params["scales"][split_mask] = new_scales_base
+                with torch.no_grad():
+                    self.gauss_params["scales"][split_mask] = new_scales_base
             elif scales_split_raw.dim() == 3:
                 if scales_split_raw.shape[1] * scales_split_raw.shape[2] != 3:
                     raise ValueError(f"Unexpected scales shape for split: {tuple(scales_split_raw.shape)}")
                 new_scales = new_scales_base.view(scales_split_raw.shape).repeat(samps, 1, 1)
-                self.gauss_params["scales"][split_mask] = new_scales_base.view(scales_split_raw.shape)
+                with torch.no_grad():
+                    self.gauss_params["scales"][split_mask] = new_scales_base.view(scales_split_raw.shape)
             else:
                 raise ValueError(f"Unexpected scales shape for split: {tuple(scales_split_raw.shape)}")
         else:
             new_scales = torch.log(torch.exp(scales_param[split_mask]) / size_fac).repeat(samps, 1)
-            scales_param[split_mask] = torch.log(torch.exp(scales_param[split_mask]) / size_fac)
+            with torch.no_grad():
+                scales_param[split_mask] = torch.log(torch.exp(scales_param[split_mask]) / size_fac)
         if self.scale_dim == 3:    
             # step 5, sample new quats
             new_quats = self.quats[split_mask].repeat(samps, 1)
