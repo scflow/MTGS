@@ -267,8 +267,15 @@ class VanillaGaussianSplattingModel(torch.nn.Module):
     def scales(self) -> torch.nn.Parameter:
         if self.scale_dim == 3:
             scales = self.gauss_params["scales"]
-            if scales.dim() == 3 and scales.shape[1] == 1:
-                scales = scales.squeeze(1)
+            if scales.dim() == 3:
+                if scales.shape[1] == 1 and scales.shape[2] == 3:
+                    scales = scales.squeeze(1)
+                elif scales.shape[2] == 1 and scales.shape[1] == 3:
+                    scales = scales.squeeze(2)
+                else:
+                    scales = scales.reshape(scales.shape[0], -1)
+                if scales.shape[1] != 3:
+                    raise ValueError(f"Unexpected scales shape for scale_dim=3: {tuple(self.gauss_params['scales'].shape)}")
             return scales
         elif self.scale_dim == 1:
             scales = self.gauss_params["scales"]
@@ -647,13 +654,19 @@ class VanillaGaussianSplattingModel(torch.nn.Module):
             CONSOLE.log(f"Splitting {split_mask.sum().item()/self.num_points} gaussians: {n_splits}/{self.num_points}")
         centered_samples = torch.randn((samps * n_splits, 3), device=self.device)  # Nx3 of axis-aligned scales
         scales_param = self.gauss_params["scales"]
-        scales_3d = self.scale_dim == 3 and scales_param.dim() == 3 and scales_param.shape[1] == 1
-        if self.scale_dim == 3 and scales_param.dim() not in (2, 3):
-            raise ValueError(f"Unexpected scales shape for split: {tuple(scales_param.shape)}")
-        if scales_3d:
-            scales_split = scales_param.squeeze(1)[split_mask]
+        if self.scale_dim == 3:
+            scales_split_raw = scales_param[split_mask]
+            scales_split = scales_split_raw
+            if scales_split.dim() != 2:
+                scales_split = scales_split.reshape(scales_split.shape[0], -1)
+            if scales_split.shape[1] != 3:
+                raise ValueError(f"Unexpected scales shape for split: {tuple(scales_split_raw.shape)}")
         else:
             scales_split = self.scales[split_mask]
+            if scales_split.dim() != 2:
+                scales_split = scales_split.reshape(scales_split.shape[0], -1)
+            if scales_split.shape[1] != 3:
+                raise ValueError(f"Unexpected scales shape for split: {tuple(scales_split.shape)}")
         scaled_samples = torch.exp(scales_split.repeat(samps, 1)) * centered_samples  # how these scales are rotated
         quats = self.quats[split_mask] / self.quats[split_mask].norm(dim=-1, keepdim=True)  # normalize them first
         rots = quat_to_rotmat(quats.repeat(samps, 1))  # how these scales are rotated
@@ -663,14 +676,22 @@ class VanillaGaussianSplattingModel(torch.nn.Module):
         new_properties = self.split_properties(split_mask, samps)
         # step 4, sample new scales
         size_fac = 1.6
-        if scales_3d:
-            new_scales = torch.log(torch.exp(scales_split) / size_fac).repeat(samps, 1).unsqueeze(1)
-            self.gauss_params["scales"][split_mask] = (
-                torch.log(torch.exp(scales_split) / size_fac).unsqueeze(1)
-            )
+        if self.scale_dim == 3:
+            new_scales_base = torch.log(torch.exp(scales_split) / size_fac)
+            scales_split_raw = scales_param[split_mask]
+            if scales_split_raw.dim() == 2:
+                new_scales = new_scales_base.repeat(samps, 1)
+                self.gauss_params["scales"][split_mask] = new_scales_base
+            elif scales_split_raw.dim() == 3:
+                if scales_split_raw.shape[1] * scales_split_raw.shape[2] != 3:
+                    raise ValueError(f"Unexpected scales shape for split: {tuple(scales_split_raw.shape)}")
+                new_scales = new_scales_base.view(scales_split_raw.shape).repeat(samps, 1, 1)
+                self.gauss_params["scales"][split_mask] = new_scales_base.view(scales_split_raw.shape)
+            else:
+                raise ValueError(f"Unexpected scales shape for split: {tuple(scales_split_raw.shape)}")
         else:
             new_scales = torch.log(torch.exp(scales_param[split_mask]) / size_fac).repeat(samps, 1)
-            self.scales[split_mask] = torch.log(torch.exp(scales_split) / size_fac)
+            scales_param[split_mask] = torch.log(torch.exp(scales_param[split_mask]) / size_fac)
         if self.scale_dim == 3:    
             # step 5, sample new quats
             new_quats = self.quats[split_mask].repeat(samps, 1)

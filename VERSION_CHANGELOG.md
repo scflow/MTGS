@@ -16,3 +16,13 @@
   - 修复 split_gaussians 中 scales 为 [N,1,3] 时的维度问题，计算时压缩并保持参数形状一致。
 - train_hybrid.sh
   - 新增 MTGS Hybrid 训练辅助脚本。
+
+更新: 2026-01-16 12:19:56
+- mtgs/scene_model/mtgs_scene_graph.py
+  - 车辆 LPIPS 改为批量化计算，减少逐车多次前向开销。
+  - 训练阶段引入 vehicle_lpips_interval 按 N 步计算并做权重补偿。
+  - 车辆 LPIPS 结果在 metrics/loss 间缓存共享，避免重复计算。
+- mtgs/config/MTGS_Hybrid.py
+  - 新增 vehicle_lpips_interval=5 默认值。
+- mtgs/scene_model/gaussian_model/vanilla_gaussian_splatting.py
+  - split_gaussians 对 scales 形状更健壮的 squeeze/reshape 处理并加异常检测。
