@@ -8,6 +8,9 @@ PORT=${4:-29500}
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="$REPO_ROOT/thirdparty/kiss-icp/python${PYTHONPATH:+:$PYTHONPATH}"
 
+export USE_TF=0
+export TRANSFORMERS_NO_TF=1
+
 print_banner() {
     echo "=================================="
     echo "Executing: $1"
