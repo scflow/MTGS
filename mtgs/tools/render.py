@@ -400,7 +400,12 @@ def eval_setup(
 
 
     # setup pipeline (which includes the DataManager)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     pipeline = config.pipeline.setup(device=device, test_mode=test_mode)
     assert isinstance(pipeline, Pipeline)
     pipeline.eval()
@@ -667,20 +672,15 @@ class RenderInterpolated(BaseRender):
                 )
                 rendered[cam_name] = images
 
-            # concat and save videos
-            videos = []
-            for cam in ('CAM_L0', 'CAM_F0', 'CAM_R0'):
-                video = rendered[cam]
-                videos.append(video)
-            videos = np.concatenate(videos, axis=-2)
-            media.write_video(output_path / "concat_front.mp4", videos, fps=self.frame_rate)
+            if all(cam in rendered for cam in ('CAM_L0', 'CAM_F0', 'CAM_R0')):
+                videos = [rendered[cam] for cam in ('CAM_L0', 'CAM_F0', 'CAM_R0')]
+                videos = np.concatenate(videos, axis=-2)
+                media.write_video(output_path / "concat_front.mp4", videos, fps=self.frame_rate)
 
-            videos = []
-            for cam in ('CAM_R2', 'CAM_B0', 'CAM_L2'):
-                video = rendered[cam]
-                videos.append(video)
-            videos = np.concatenate(videos, axis=-2)
-            media.write_video(output_path / "concat_back.mp4", videos, fps=self.frame_rate)
+            if all(cam in rendered for cam in ('CAM_R2', 'CAM_B0', 'CAM_L2')):
+                videos = [rendered[cam] for cam in ('CAM_R2', 'CAM_B0', 'CAM_L2')]
+                videos = np.concatenate(videos, axis=-2)
+                media.write_video(output_path / "concat_back.mp4", videos, fps=self.frame_rate)
 
         base_output_path = Path()
         if self.output_path is not None:

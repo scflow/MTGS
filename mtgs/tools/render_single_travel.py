@@ -11,6 +11,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import torch
+
+
+CAMERA_NAMES = ("CAM_F0", "CAM_L0", "CAM_R0", "CAM_L1", "CAM_R1", "CAM_L2", "CAM_R2", "CAM_B0")
+
 
 def _replace_or_append(text: str, key: str, value: str) -> str:
     pattern = rf"^{re.escape(key)}:.*$"
@@ -26,7 +31,10 @@ def _set_eval_scene_travels(text: str, travel_id: int) -> str:
     if not match:
         return text.rstrip() + f"\n{replacement}\n"
     indent = match.group(1)
-    return text[: match.start()] + indent + replacement + text[match.end() :]
+    rest = text[match.end():]
+    # Remove any remaining list items ("- value") that belonged to the old multiline tuple
+    rest = re.sub(r"\n(?:\s*-.*\n)*", "\n", rest, count=1)
+    return text[: match.start()] + indent + replacement + rest
 
 
 def _parse_step_from_ckpt(ckpt_path: Path) -> int:
@@ -47,6 +55,7 @@ def main() -> None:
     parser.add_argument("--frame-rate", type=int, default=60)
     parser.add_argument("--downscale-factor", type=float, default=2.0)
     parser.add_argument("--pose-source", choices=["eval", "train"], default="eval")
+    parser.add_argument("--camera", choices=CAMERA_NAMES, default=None, help="Render only one camera view.")
     args = parser.parse_args()
 
     base_config = Path(args.config).resolve()
@@ -65,6 +74,15 @@ def main() -> None:
     env = os.environ.copy()
     env.setdefault("NERFSTUDIO_METHOD_CONFIGS", "mtgs=mtgs.config.MTGS:method")
     env.setdefault("NERFSTUDIO_DATAPARSER_CONFIGS", "nuplan=mtgs.config.nuplan_dataparser:nuplan_dataparser")
+
+    # Inject gsplat-mps compatibility shim via sitecustomize if on MPS device
+    import tempfile
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() and not torch.cuda.is_available():
+        site_dir = tempfile.mkdtemp(prefix="gsplat_mps_compat_")
+        sitecustomize = os.path.join(site_dir, "sitecustomize.py")
+        with open(sitecustomize, "w") as f:
+            f.write("import mtgs.tools.gsplat_mps_compat\n")
+        env["PYTHONPATH"] = site_dir + os.pathsep + env.get("PYTHONPATH", "")
 
     cmd = [
         sys.executable,
@@ -85,6 +103,8 @@ def main() -> None:
         "--output-format",
         "video",
     ]
+    if args.camera is not None:
+        cmd.extend(["--multi-view-camera", args.camera])
     subprocess.run(cmd, check=True, env=env)
 
 
